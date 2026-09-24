@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Support Triage Agent</title>
+<style>
+  :root{
+    --ink:#1b1f24;
+    --paper:#f6f4ef;
+    --line:#d8d2c4;
+    --accent:#2f5d50;
+    --accent-soft:#e4ede9;
+    --warn:#8a4b2f;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:var(--serif);
+    line-height:1.5;
+    padding:32px 20px 64px;
+  }
+  .wrap{max-width:760px;margin:0 auto;}
+  header{margin-bottom:22px;}
+  h1{font-size:26px;margin:0 0 4px;font-weight:600;}
+  .sub{font-family:var(--mono);font-size:13px;color:#6b6252;letter-spacing:.02em;}
+
+  .panel{
+    background:#fff;
+    border:1px solid var(--line);
+    border-radius:6px;
+    padding:20px;
+    margin-bottom:18px;
+  }
+  label{display:block;font-family:var(--mono);font-size:12px;color:#6b6252;margin-bottom:6px;}
+  textarea, input[type="text"], input[type="password"]{
+    width:100%;
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:12px;
+    font-family:var(--serif);
+    font-size:15px;
+    background:#fffdf9;
+  }
+  textarea{min-height:120px;resize:vertical;}
+  textarea:focus, input:focus{outline:2px solid var(--accent);outline-offset:1px;}
+
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px;align-items:center;}
+  button{
+    font-family:var(--mono);
+    font-size:13px;
+    background:var(--accent);
+    color:#fff;
+    border:none;
+    padding:10px 18px;
+    border-radius:4px;
+    cursor:pointer;
+  }
+  button.secondary{background:transparent;color:var(--accent);border:1px solid var(--accent);}
+  button:disabled{opacity:.5;cursor:default;}
+
+  .mode-toggle{display:flex;border:1px solid var(--accent);border-radius:4px;overflow:hidden;font-family:var(--mono);font-size:12px;}
+  .mode-toggle button{background:#fff;color:var(--accent);border-radius:0;padding:8px 14px;}
+  .mode-toggle button.active{background:var(--accent);color:#fff;}
+
+  .key-field{margin-top:14px;display:none;}
+  .key-field.show{display:block;}
+  .note{font-family:var(--mono);font-size:11.5px;color:#9c927e;margin-top:6px;}
+
+  .result{display:none;}
+  .result.show{display:block;}
+
+  .tag{
+    display:inline-block;
+    font-family:var(--mono);
+    font-size:12px;
+    padding:3px 9px;
+    border-radius:3px;
+    background:var(--accent-soft);
+    color:var(--accent);
+    margin-right:8px;
+  }
+  .tag.urgent{background:#f3e3da;color:var(--warn);}
+  .tag.source{background:#eee;color:#666;}
+
+  .kv{display:grid;grid-template-columns:120px 1fr;gap:6px 14px;font-size:14px;margin:14px 0;}
+  .kv dt{font-family:var(--mono);font-size:12px;color:#6b6252;}
+  .kv dd{margin:0;}
+
+  .draft{
+    white-space:pre-wrap;
+    background:#fffdf9;
+    border:1px dashed var(--line);
+    border-radius:4px;
+    padding:14px;
+    font-size:14.5px;
+    min-height:40px;
+  }
+  .error{color:var(--warn);font-family:var(--mono);font-size:12.5px;margin-top:10px;display:none;}
+  .error.show{display:block;}
+  footer{margin-top:30px;font-family:var(--mono);font-size:12px;color:#9c927e;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Support Triage Agent</h1>
+    <div class="sub">classify → look up order → draft reply</div>
+  </header>
+
+  <div class="panel">
+    <div class="row" style="margin-top:0;">
+      <div class="mode-toggle">
+        <button id="mode-rule" class="active" type="button">Rule-based</button>
+        <button id="mode-ai" type="button">AI-powered (OpenAI)</button>
+      </div>
+    </div>
+
+    <div class="key-field" id="key-field">
+      <label for="apikey">OpenAI API key (kept in memory only, never sent anywhere but api.openai.com)</label>
+      <input type="password" id="apikey" placeholder="sk-..." autocomplete="off" />
+      <div class="note">This calls the OpenAI API directly from your browser. Fine for a local demo/portfolio piece — never ship a real product this way, since a client-side key is publicly visible in the page's network requests.</div>
+    </div>
+
+    <label for="ticket" style="margin-top:16px;">Incoming support message</label>
+    <textarea id="ticket" placeholder="Paste a customer email or message here...">Hi, I ordered stickers 6 days ago (order #SM-48213) and they still haven't shipped. Can you tell me what's going on? Kind of frustrated since I needed these for an event this weekend.</textarea>
+    <div class="row">
+      <button id="run">Run agent</button>
+      <button id="clear" class="secondary">Clear</button>
+    </div>
+    <div class="error" id="error"></div>
+  </div>
+
+  <div class="panel result" id="result">
+    <div id="tags"></div>
+    <dl class="kv" id="kv"></dl>
+    <label>Drafted reply</label>
+    <div class="draft" id="draft"></div>
+  </div>
+
+  <footer>Rule-based mode classifies with keyword matching, entirely client-side. AI-powered mode sends the message to gpt-4o-mini for classification + drafting, then merges the result with the same mock order lookup.</footer>
+</div>
+
+<script>
+// --- mock order database (stand-in for a real "connected database" lookup) ---
+const ORDERS = {
+  "SM-48213": { status: "In production", placed: "6 days ago", eta: "2 days", item: "Custom die-cut stickers (250 qty)" },
+  "SM-90021": { status: "Shipped", placed: "3 days ago", eta: "arriving tomorrow", item: "Holographic labels (100 qty)" },
+};
+
+let mode = "rule";
+
+function findOrderId(text) {
+  const m = text.match(/#?\s?(SM-\d{4,6})/i);
+  return m ? m[1].toUpperCase() : null;
+}
+
+function getOrder(text) {
+  const id = findOrderId(text);
+  return id && ORDERS[id] ? { id, ...ORDERS[id] } : null;
+}
+
+// ---------- rule-based path ----------
+function classifyRule(text) {
+  const t = text.toLowerCase();
+  const scores = { billing: 0, shipping: 0, product: 0 };
+  const billingWords = ["refund","charge","invoice","payment","billed","price","overcharged","subscription"];
+  const shippingWords = ["ship","shipped","delivery","order","tracking","arrive","late","still haven't","hasn't arrived"];
+  const productWords = ["quality","broken","wrong","defect","misprint","color","damaged","design"];
+  billingWords.forEach(w => { if (t.includes(w)) scores.billing++; });
+  shippingWords.forEach(w => { if (t.includes(w)) scores.shipping++; });
+  productWords.forEach(w => { if (t.includes(w)) scores.product++; });
+  let category = "general", best = 0;
+  Object.entries(scores).forEach(([k,v]) => { if (v > best) { best = v; category = k; } });
+  const urgentWords = ["frustrated","asap","urgent","event this weekend","need this","angry","immediately"];
+  const urgent = urgentWords.some(w => t.includes(w));
+  return { category, urgent };
+}
+
+function draftReply(category, order, urgent) {
+  const opener = urgent
+    ? "Thanks for flagging this, and sorry for the stress — I know timing matters here."
+    : "Thanks for reaching out!";
+  if (category === "shipping" && order) {
+    return `${opener}\n\nI checked order ${order.id} — it's currently "${order.status}" (placed ${order.placed}), with an estimated ${order.eta} until it's with you. I'll flag it as priority given your timeline.\n\nLet me know if you'd like expedited shipping explored on our end.\n\n— Support`;
+  }
+  if (category === "shipping") {
+    return `${opener}\n\nCould you share your order number so I can pull the latest shipping status for you?\n\n— Support`;
+  }
+  if (category === "billing") {
+    return `${opener}\n\nI'm looking into the billing details on your account now. Could you confirm the order number or invoice date?\n\n— Support`;
+  }
+  if (category === "product") {
+    return `${opener}\n\nSorry to hear the print quality wasn't right. Could you send a quick photo of the issue? I'll get a reprint or refund started.\n\n— Support`;
+  }
+  return `${opener}\n\nCould you tell me a bit more about the issue so I can route this to the right place?\n\n— Support`;
+}
+
+function runRule(text) {
+  const order = getOrder(text);
+  const { category, urgent } = classifyRule(text);
+  const reply = draftReply(category, order, urgent);
+  return { category, urgent, order, reply, source: "rule-based" };
+}
+
+// ---------- AI-powered path ----------
+async function runAI(text, apiKey) {
+  const order = getOrder(text);
+  const system = `You are a support-ticket triage assistant for a printing company. Given a customer message and (if present) known order details, respond with ONLY strict JSON, no prose, no markdown fences:
+{"category": "billing" | "shipping" | "product" | "general", "urgent": true | false, "reply": "a short, warm draft reply as plain text"}`;
+
+  const userContent = order
+    ? `Message: ${text}\n\nKnown order info: ${JSON.stringify(order)}`
+    : `Message: ${text}\n\nNo order info available.`;
+
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.4,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`OpenAI API error (${res.status}): ${body.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  let raw = data.choices?.[0]?.message?.content?.trim() || "{}";
+  raw = raw.replace(/^```json/i, "").replace(/^```/, "").replace(/```$/, "").trim();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new Error("Could not parse model response as JSON.");
+  }
+
+  return {
+    category: parsed.category || "general",
+    urgent: !!parsed.urgent,
+    order,
+    reply: parsed.reply || "(no reply generated)",
+    source: "gpt-4o-mini",
+  };
+}
+
+// ---------- UI wiring ----------
+function renderResult({ category, urgent, order, reply, source }) {
+  document.getElementById('tags').innerHTML =
+    `<span class="tag">${category}</span>` +
+    (urgent ? `<span class="tag urgent">flagged urgent</span>` : '') +
+    `<span class="tag source">${source}</span>`;
+
+  document.getElementById('kv').innerHTML = order
+    ? `<dt>Order</dt><dd>${order.id} — ${order.item}</dd>
+       <dt>Status</dt><dd>${order.status}</dd>
+       <dt>ETA</dt><dd>${order.eta}</dd>`
+    : `<dt>Order</dt><dd>No order number detected in message</dd>`;
+
+  document.getElementById('draft').textContent = reply;
+  document.getElementById('result').classList.add('show');
+}
+
+function showError(msg) {
+  const el = document.getElementById('error');
+  el.textContent = msg;
+  el.classList.add('show');
+}
+function clearError() {
+  const el = document.getElementById('error');
+  el.classList.remove('show');
+  el.textContent = '';
+}
+
+async function run() {
+  clearError();
+  const text = document.getElementById('ticket').value.trim();
+  if (!text) return;
+
+  const runBtn = document.getElementById('run');
+  runBtn.disabled = true;
+  runBtn.textContent = mode === 'ai' ? 'Thinking…' : 'Running…';
+
+  try {
+    if (mode === 'ai') {
+      const key = document.getElementById('apikey').value.trim();
+      if (!key) { showError('Enter an OpenAI API key to use AI-powered mode, or switch to Rule-based.'); return; }
+      const out = await runAI(text, key);
+      renderResult(out);
+    } else {
+      renderResult(runRule(text));
+    }
+  } catch (err) {
+    showError(err.message || String(err));
+  } finally {
+    runBtn.disabled = false;
+    runBtn.textContent = 'Run agent';
+  }
+}
+
+document.getElementById('run').addEventListener('click', run);
+document.getElementById('clear').addEventListener('click', () => {
+  document.getElementById('ticket').value = '';
+  document.getElementById('result').classList.remove('show');
+  clearError();
+});
+
+document.getElementById('mode-rule').addEventListener('click', () => {
+  mode = 'rule';
+  document.getElementById('mode-rule').classList.add('active');
+  document.getElementById('mode-ai').classList.remove('active');
+  document.getElementById('key-field').classList.remove('show');
+});
+document.getElementById('mode-ai').addEventListener('click', () => {
+  mode = 'ai';
+  document.getElementById('mode-ai').classList.add('active');
+  document.getElementById('mode-rule').classList.remove('active');
+  document.getElementById('key-field').classList.add('show');
+});
+
+// run once on load in rule-based mode with the sample ticket
+run();
+</script>
+</body>
+</html>
